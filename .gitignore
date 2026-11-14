@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pt
+*.npy
+eval_videos/
+demo_out/
+eval_*.json
+plan_demo.py
