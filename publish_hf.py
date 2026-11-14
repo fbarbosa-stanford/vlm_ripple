@@ -11,7 +11,10 @@ import os
 
 import modal
 
-from modal_app import SECRETS, VOLS, image
+from modal_app import SECRETS, VOLS
+from modal_app import image as _image
+
+image = _image.add_local_python_source("modal_app")
 
 app = modal.App("ripple-vla-publish")
 
