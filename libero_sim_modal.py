@@ -1,6 +1,6 @@
 """Headless LIBERO (robosuite + MuJoCo) smoke test on Modal.
 
-Run from /Users/felipebarbosa/atari_agent:
+Run from the parent directory of ripple_vla/:
     modal run ripple_vla/libero_sim_modal.py
     modal run ripple_vla/libero_sim_modal.py --suite libero_object --task-id 3 --steps 100
 

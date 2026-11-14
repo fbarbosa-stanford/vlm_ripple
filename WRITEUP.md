@@ -1,5 +1,9 @@
 # Ripple-VLA: Project Write-up
 
+> **Note added after this document was written:** this write-up was drafted mid-project (for example, section 13
+> describes a training run that was still in progress). The **README is the current source of truth** for what was
+> trained, the final results and what has not been done.
+
 *Last updated 2026-11-13. Author: Mark Music, building on the initial scaffold by fbarbosa-stanford.*
 
 This document covers the whole project in one place: what we're building and why, how every piece works, what

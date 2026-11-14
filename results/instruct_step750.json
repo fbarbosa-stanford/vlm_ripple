@@ -1,0 +1,83 @@
+{
+ "ckpt": "/outputs/ripple_vla/instruct/last.pt",
+ "tiny": false,
+ "n": 200,
+ "seed": 0,
+ "pool": 2,
+ "tasks": {
+  "shapes": {
+   "kind": "mc",
+   "n": 200,
+   "image": {
+    "acc": 0.735,
+    "chance": 0.3125,
+    "acc_by_group": {
+     "color": 1.0,
+     "count": 0.46,
+     "position": 0.48,
+     "shape": 1.0
+    }
+   },
+   "shuffled": {
+    "acc": 0.29,
+    "chance": 0.3125,
+    "acc_by_group": {
+     "color": 0.08,
+     "count": 0.26,
+     "position": 0.48,
+     "shape": 0.34
+    }
+   },
+   "headline": "acc",
+   "gain": 0.445,
+   "gain_se": 0.04792031702649302,
+   "sec": 48.2
+  },
+  "pope": {
+   "kind": "mc",
+   "n": 200,
+   "image": {
+    "acc": 0.745,
+    "chance": 0.5,
+    "acc_by_group": {
+     "adversarial": 0.625,
+     "popular": 0.7568,
+     "random": 0.8548
+    },
+    "f1": 0.7713004484304933,
+    "yes_ratio": 0.635
+   },
+   "shuffled": {
+    "acc": 0.595,
+    "chance": 0.5,
+    "acc_by_group": {
+     "adversarial": 0.625,
+     "popular": 0.5541,
+     "random": 0.6129
+    },
+    "f1": 0.5621621621621622,
+    "yes_ratio": 0.445
+   },
+   "headline": "acc",
+   "gain": 0.15000000000000002,
+   "gain_se": 0.04297363922617805,
+   "sec": 27.5
+  },
+  "coco": {
+   "kind": "nll",
+   "n": 200,
+   "image": {
+    "nll_per_token": 2.776771408665013,
+    "ppl": 16.067063137068548
+   },
+   "shuffled": {
+    "nll_per_token": 4.205593519392997,
+    "ppl": 67.06038749760015
+   },
+   "headline": "nll_per_token",
+   "gain": 1.4288221107279844,
+   "gain_se": 0.03818950591238937,
+   "sec": 46.6
+  }
+ }
+}
