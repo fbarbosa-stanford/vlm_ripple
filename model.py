@@ -259,7 +259,7 @@ class RippleVLA(nn.Module):
 
     # ---- losses ----------------------------------------------------------------------
     def forward(self, batch: dict, stage: str):
-        if stage == "align":
+        if stage in ("align", "instruct"):
             return self.caption_loss(batch)
         if stage == "vla":
             return self.flow_loss(batch)
@@ -311,6 +311,14 @@ class RippleVLA(nn.Module):
         return self.unnorm_actions(x)
 
     @torch.no_grad()
+    def generate(self, images, input_ids, attention_mask, max_new_tokens: int = 40, eos_id: int | None = None):
+        """KV-cached batched generation (HF generate on inputs_embeds). Prompts in a batch must have equal
+        length (no padding), since images are spliced at a fixed text position. Returns (B, <=new) token ids."""
+        embeds, mask, _ = self.build_inputs(images, input_ids, attention_mask)
+        return self.backbone.generate(inputs_embeds=embeds, attention_mask=mask, max_new_tokens=max_new_tokens,
+                                      do_sample=False, eos_token_id=eos_id, pad_token_id=eos_id)
+
+    @torch.no_grad()
     def caption(self, images, input_ids, attention_mask, max_new_tokens=40, eos_ids=()):
         """Greedy caption (sanity check for stage-1 alignment). Batch size 1, no KV cache."""
         embeds, mask, n_img = self.build_inputs(images, input_ids, attention_mask)
@@ -335,6 +343,8 @@ def trainable_parameters(model: RippleVLA, stage: str):
         train = n.startswith("projector.")
         if stage == "vla":
             train = train or n.startswith("expert.") or ".lora_" in n
+        elif stage == "instruct":  # visual instruction tuning: projector + LoRA on the LLM (no action expert)
+            train = train or ".lora_" in n
         if train:
             p.requires_grad_(True)
             names.append((n, p))

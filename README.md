@@ -40,8 +40,31 @@ gain > 2 SE means visual information reaches the LLM. Expect caption NLL (coco, 
 first; POPE, MMBench and VQAv2 need instruction following and may stay near the baseline until a
 visual instruction-tuning stage exists.
 
+## Results so far (65B, 200 items/task, single run)
+Scored with the right image vs a shuffled image (`gain` = difference). Full raw output in `results/`.
+
+| Task | Stage 1 (projector only) | + visual instruction tuning (LoRA, step 750) |
+|---|---|---|
+| POPE yes/no acc (chance 50%) | 47.0%, gain -0.04 +- 0.04 | **74.5%**, gain +0.15 +- 0.04 |
+| Synthetic shapes (chance 31%) | 62.5% | **73.5%** |
+| COCO caption NLL/token | 3.00 | **2.78** |
+
+Counting and position are still near chance; colours and long descriptions can be wrong. Stage 2 was stopped at
+step ~910/1500 (step-750 checkpoint). Text-only quality after the LoRA is untested.
+
+## Instruction tuning and demo
+```bash
+modal run ripple_vla/modal_app.py::fetch_instruct          # LLaVA-Instruct-150K json + COCO train2017.zip (new volume ripple-vla-coco)
+RIPPLE_GPU=H200:8 modal run --detach ripple_vla/modal_app.py::train --stage instruct --name instruct \
+  --args="--resume /outputs/ripple_vla/vlm/last.pt --instruct_json /coco/llava_instruct_150k.json \
+          --instruct_zip /coco/train2017.zip --instruct_limit 50000 --pool 2 --lora_rank 16 \
+          --max_text_len 320 --steps 1500 --bs 4 --lr 5e-5 --lr_lora 1e-4"
+RIPPLE_DEMO_CKPT=/outputs/ripple_vla/instruct/last.pt RIPPLE_DEMO_GPU=H100:2 modal serve ripple_vla/demo.py   # Gradio upload demo
+modal run ripple_vla/publish_hf.py                          # publish adapter to the HF Hub (private by default)
+```
+
 ## Notes
 - Ripple multiplies `inputs_embeds` by `embed_scale` itself, so image tokens are spliced at raw embedding scale.
 - FSDP: every rank must run the same number of forwards (no per-rank early stopping in generation).
-- Status: tiny-model smoke tests pass for both stages; 65B alignment verified at ~1.5 s/step on 8xH200;
-  the `vla` stage and `eval_libero.py` have not been run on the 65B yet.
+- Status: `align` and `instruct` stages trained on the 65B (8xH200, ~1.5 s/step and ~2.6 s/step). The `vla` stage and
+  `eval_libero.py` have not been run on the 65B yet.

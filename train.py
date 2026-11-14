@@ -21,7 +21,7 @@ from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler
 
 def parse():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", choices=["align", "vla"], required=True)
+    p.add_argument("--stage", choices=["align", "instruct", "vla"], required=True)
     p.add_argument("--ckpt_dir", required=True, help="local Ripple snapshot (config/code/tokenizer[/weights])")
     p.add_argument("--tiny", action="store_true", help="tiny random Ripple + tiny SigLIP + synthetic data")
     p.add_argument("--out", default="/outputs/ripple_vla/run")
@@ -36,6 +36,10 @@ def parse():
     p.add_argument("--lora_rank", type=int, default=0)
     p.add_argument("--pool", type=int, default=1)
     p.add_argument("--feature_layers", default="-1", help="comma list into hidden_states, e.g. '40,-1'")
+    p.add_argument("--instruct_json", default=None, help="LLaVA-Instruct-150K json (stage instruct)")
+    p.add_argument("--instruct_zip", default=None, help="COCO train2017.zip (read in place)")
+    p.add_argument("--instruct_limit", type=int, default=None)
+    p.add_argument("--max_text_len", type=int, default=96)
     p.add_argument("--llava_dir", default=None)
     p.add_argument("--llava_zip", default=None, help="path to LLaVA-Pretrain images.zip (read in place)")
     p.add_argument("--llava_limit", type=int, default=None)
@@ -60,19 +64,22 @@ def main():
 
     from transformers import AutoTokenizer
 
-    from data import Collator, LiberoCaption, LiberoVLA, LlavaPretrain, Synthetic, image_insert_pos
+    from data import Collator, LiberoCaption, LiberoVLA, LlavaInstruct, LlavaPretrain, Synthetic, image_insert_pos
     from loading import build_vla, save_trainable
     from model import VLAConfig
 
     tok = AutoTokenizer.from_pretrained(a.ckpt_dir)
-    cfg = VLAConfig(pool=a.pool, lora_rank=a.lora_rank if a.stage == "vla" else 0,
+    cfg = VLAConfig(pool=a.pool, lora_rank=a.lora_rank if a.stage in ("vla", "instruct") else 0,
                     feature_layers=tuple(int(x) for x in a.feature_layers.split(",")),
                     image_insert_pos=image_insert_pos(tok))
 
     # ---------------- data ----------------
     if a.tiny:
-        ds = Synthetic(caption=a.stage == "align", num_images=2)
+        ds = Synthetic(caption=a.stage == "align", multiturn=a.stage == "instruct", num_images=2)
         cfg = dataclasses.replace(cfg, expert_dim=128, expert_layers=2, expert_heads=4)
+    elif a.stage == "instruct":
+        assert a.instruct_json and a.instruct_zip, "instruct stage needs --instruct_json and --instruct_zip"
+        ds = LlavaInstruct(a.instruct_json, a.instruct_zip, limit=a.instruct_limit)
     elif a.stage == "vla":
         ds = LiberoVLA(root=a.libero_root, chunk=cfg.chunk)
         st = ds.stats
@@ -94,7 +101,7 @@ def main():
     for d in ([ds] if ds is not None else parts):
         sampler = DistributedSampler(d, num_replicas=world, rank=rank, shuffle=True, drop_last=True)
         loaders.append(DataLoader(d, batch_size=a.bs, sampler=sampler, num_workers=a.workers,
-                                  collate_fn=Collator(tok), pin_memory=True, drop_last=True,
+                                  collate_fn=Collator(tok, max_text_len=a.max_text_len), pin_memory=True, drop_last=True,
                                   persistent_workers=a.workers > 0))
     log(f"[data] {[len(l.dataset) for l in loaders]} samples; world={world} bs/gpu={a.bs} "
         f"accum={a.grad_accum} -> global bs {a.bs * world * a.grad_accum}")
@@ -179,7 +186,7 @@ def main():
     # quick qualitative check
     model.eval()
     b = next_batch(0)
-    if a.stage == "align":
+    if a.stage in ("align", "instruct"):
         n = 1
         # FSDP: every rank must run the SAME number of forwards, so no early stop on EOS (ranks hold
         # different data and would stop at different steps -> NCCL collective mismatch / hang).

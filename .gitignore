@@ -6,3 +6,4 @@ eval_videos/
 demo_out/
 eval_*.json
 plan_demo.py
+caption_eval.py

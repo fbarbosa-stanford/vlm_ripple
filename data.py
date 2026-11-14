@@ -52,8 +52,23 @@ class Collator:
             ids, lab = ids + t, lab + t
         return ids[: self.max_len], lab[: self.max_len]
 
+    def encode_turns(self, turns: list[tuple[str, str]]):
+        """Multi-turn chat, loss only on assistant replies (+ their <|im_end|>)."""
+        ids = list(self.prefix)
+        lab = [-100] * len(ids)
+        for i, (q, a) in enumerate(turns):
+            head = (q + ASSISTANT) if i == 0 else f"\n<|im_start|>user\n{q}{ASSISTANT}"
+            h = self.tok(head, add_special_tokens=False).input_ids
+            r = self.tok(a + EOT, add_special_tokens=False).input_ids
+            ids += h + r
+            lab += [-100] * len(h) + r
+            if len(ids) >= self.max_len:
+                break
+        return ids[: self.max_len], lab[: self.max_len]
+
     def __call__(self, samples: list[dict]) -> dict:
-        enc = [self.encode(s["prompt"], s.get("target")) for s in samples]
+        enc = [self.encode_turns(s["turns"]) if "turns" in s else self.encode(s["prompt"], s.get("target"))
+               for s in samples]
         L = max(len(i) for i, _ in enc)
         ids = torch.full((len(enc), L), self.pad, dtype=torch.long)
         lab = torch.full((len(enc), L), -100, dtype=torch.long)
@@ -156,12 +171,43 @@ class LlavaPretrain(Dataset):
         return {"images": t[None], "prompt": q, "target": a}
 
 
+class LlavaInstruct(Dataset):
+    """LLaVA-Instruct-150K (multi-turn visual chat over COCO). Images are read in place from COCO train2017.zip."""
+
+    def __init__(self, json_path: str, zip_path: str, size: int = 224, limit: int | None = None, seed: int = 0,
+                 member_prefix: str = "train2017/"):
+        self.zip_path, self.size, self.prefix = zip_path, size, member_prefix
+        self._zf, self._pid = None, None
+        items = json.load(open(json_path))
+        random.Random(seed).shuffle(items)  # file is grouped by type (conv/detail/reasoning): sample across all
+        self.items = items[:limit] if limit else items
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, i):
+        import io
+        import zipfile
+
+        from PIL import Image
+
+        it = self.items[i]
+        if self._zf is None or self._pid != os.getpid():
+            self._zf, self._pid = zipfile.ZipFile(self.zip_path), os.getpid()
+        img = Image.open(io.BytesIO(self._zf.read(self.prefix + it["image"]))).convert("RGB")
+        img = img.resize((self.size, self.size), Image.BICUBIC)
+        t = torch.from_numpy(np.asarray(img, dtype=np.uint8).copy()).permute(2, 0, 1).float() / 255.0
+        conv = [c["value"].replace("<image>", "").strip() for c in it["conversations"]]
+        turns = [(conv[j], conv[j + 1]) for j in range(0, len(conv) - 1, 2)]
+        return {"images": t[None], "turns": turns}
+
+
 class Synthetic(Dataset):
     """For smoke tests: learnable fake data (actions are a fixed function of state)."""
 
-    def __init__(self, n=256, num_images=2, chunk=50, caption=False):
+    def __init__(self, n=256, num_images=2, chunk=50, caption=False, multiturn=False):
         g = torch.Generator().manual_seed(0)
-        self.n, self.caption = n, caption
+        self.n, self.caption, self.multiturn = n, caption, multiturn
         self.imgs = torch.rand(8, num_images, 3, 64, 64, generator=g)
         self.state = torch.randn(n, 8, generator=g)
         W = torch.randn(8, 7, generator=g) * 0.5
@@ -173,6 +219,9 @@ class Synthetic(Dataset):
 
     def __getitem__(self, i):
         k = i % 8
+        if self.multiturn:
+            return {"images": self.imgs[k], "turns": [("Which image is this?", f"image number {k}"),
+                                                      ("Say it again.", f"It is image number {k}.")]}
         if self.caption:
             return {"images": self.imgs[k], "prompt": "Describe the image.", "target": f"image number {k}"}
         return {"images": self.imgs[k], "state": self.state[i], "actions": self.actions[i],

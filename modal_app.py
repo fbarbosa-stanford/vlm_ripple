@@ -36,7 +36,8 @@ image = (
 hf_cache = modal.Volume.from_name("hf-cache", create_if_missing=True)
 outputs = modal.Volume.from_name("ripple-vla-outputs", create_if_missing=True)
 data = modal.Volume.from_name("ripple-vla-data", create_if_missing=True)
-VOLS = {"/root/.cache/huggingface": hf_cache, "/outputs": outputs, "/data": data}
+coco = modal.Volume.from_name("ripple-vla-coco", create_if_missing=True)
+VOLS = {"/root/.cache/huggingface": hf_cache, "/outputs": outputs, "/data": data, "/coco": coco}
 SECRETS = [modal.Secret.from_name("huggingface"), modal.Secret.from_name("wandb")]
 
 
@@ -86,6 +87,60 @@ def fetch_llava():
     subprocess.run(["unzip", "-q", "-o", z, "-d", f"{root}/images"], check=True)
     data.commit()
     print("LLaVA-Pretrain ready at", root)
+
+
+@app.function(image=image, cpu=8, memory=32768, volumes=VOLS, secrets=SECRETS, timeout=6 * 60 * 60)
+def fetch_instruct():
+    """LLaVA-Instruct-150K json + COCO train2017.zip (images are read in place from the zip; never extracted,
+    since the Modal volume caps the number of files)."""
+    import shutil
+    import time
+    import urllib.request
+
+    from huggingface_hub import hf_hub_download
+
+    os.makedirs("/coco", exist_ok=True)
+    js = hf_hub_download("liuhaotian/LLaVA-Instruct-150K", "llava_instruct_150k.json", repo_type="dataset")
+    shutil.copy(js, "/coco/llava_instruct_150k.json")
+    dst = "/coco/train2017.zip"
+    t0, n = time.time(), 0
+    with urllib.request.urlopen("http://images.cocodataset.org/zips/train2017.zip", timeout=120) as r, open(dst, "wb") as f:
+        while True:
+            b = r.read(8 << 20)
+            if not b:
+                break
+            f.write(b)
+            n += len(b)
+            if (n >> 20) % 1024 < 8:
+                print(f"[coco] {n / 2**30:.1f} GiB in {time.time() - t0:.0f}s", flush=True)
+    coco.commit()
+    print(f"[coco] done: {n / 2**30:.1f} GiB -> {dst}", flush=True)
+
+
+@app.function(image=image, cpu=4, memory=16384, volumes=VOLS, timeout=30 * 60)
+def check_instruct(limit: int = 50_000):
+    """CPU-only: zip opens, every image of the (shuffled, seed 0) subset exists and a sample decodes."""
+    import json
+    import random
+    import zipfile
+    from io import BytesIO
+
+    from PIL import Image
+
+    zf = zipfile.ZipFile("/coco/train2017.zip")
+    names = set(zf.namelist())
+    items = json.load(open("/coco/llava_instruct_150k.json"))
+    random.Random(0).shuffle(items)
+    items = items[:limit]
+    missing = [it["image"] for it in items if "train2017/" + it["image"] not in names]
+    ok = 0
+    for it in items[:: max(1, len(items) // 200)]:
+        Image.open(BytesIO(zf.read("train2017/" + it["image"]))).convert("RGB")
+        ok += 1
+    turns = sum(len(it["conversations"]) // 2 for it in items) / len(items)
+    print(f"zip entries {len(names)}; conversations {len(items)}; missing images {len(missing)}; "
+          f"decode ok {ok}; avg QA turns {turns:.1f}")
+    return {"missing": len(missing), "decode_ok": ok}
 
 
 @app.function(image=image, gpu=GPU_TRAIN, volumes=VOLS, secrets=SECRETS, timeout=24 * 60 * 60,

@@ -247,7 +247,13 @@ def build_vla_inference(trained_pt: str | None, ckpt_dir: str, vision_repo: str 
     from transformers import AutoModelForCausalLM, SiglipVisionModel
 
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    blob = torch.load(trained_pt, map_location="cpu", weights_only=False) if trained_pt else None
+    if trained_pt and trained_pt.endswith(".safetensors"):  # HF release format: weights + sibling config.json
+        from safetensors.torch import load_file
+
+        meta = json.load(open(os.path.join(os.path.dirname(trained_pt), "config.json")))
+        blob = {"state_dict": load_file(trained_pt), "cfg": meta["cfg"]}
+    else:
+        blob = torch.load(trained_pt, map_location="cpu", weights_only=False) if trained_pt else None
     if blob is not None:
         cfg = VLAConfig(**{k: (tuple(v) if isinstance(v, list) and k in ("feature_layers", "lora_targets") else v)
                            for k, v in blob["cfg"].items() if k in {f.name for f in dataclasses.fields(VLAConfig)}})
