@@ -12,6 +12,7 @@ flow-matching action head, trained on Modal and evaluated on LIBERO (MuJoCo). Wo
 | `train.py` | `torchrun` entrypoint for two stages: `align` (caption loss, trains projector) and `vla` (flow-matching loss, trains action expert + LoRA) |
 | `modal_app.py` | Modal launcher: `smoke`, `fetch_weights`, `fetch_llava`, `check_llava`, `train` |
 | `libero_sim_modal.py` | Headless LIBERO (robosuite + OSMesa) image and smoke test |
+| `eval_vlm.py` | Vision-language eval of the projector: synthetic shapes, POPE, COCO caption NLL, held-out LLaVA NLL, MMBench, VQAv2. Every task is scored with the right image and with a shuffled image; the gap is the visual signal |
 | `eval_libero.py` | Closed-loop LIBERO eval: one GPU policy server, many CPU sim workers (written, not yet run) |
 
 ## Usage (from the parent directory)
@@ -22,6 +23,22 @@ RIPPLE_GPU=H200:8 modal run --detach ripple_vla/modal_app.py::train --stage alig
   --args="--llava_zip <path to images.zip> --llava_limit 100000 --pool 2 --steps 3000 --bs 4"
 ```
 Needs Modal secrets `huggingface` and `wandb`.
+
+### Evaluating the vision projector
+```bash
+modal run ripple_vla/modal_app.py::eval_vlm --tiny --args "--n 32 --tasks shapes,pope"     # pipeline test (~minutes)
+modal run ripple_vla/modal_app.py::eval_vlm --name random                                  # random-projector baseline, 65B
+modal run ripple_vla/modal_app.py::eval_vlm --ckpt /outputs/ripple_vla/vlm/last.pt --name vlm
+```
+Add `--args "--tasks shapes,pope,coco,llava,mmbench,vqav2 --n 500"` to change tasks or size. Results go to
+`/outputs/ripple_vla/eval/<name>/results.json` plus per-item `samples.jsonl` (generated captions included).
+For a checkpoint received outside Modal, upload it first: `modal volume put ripple-vla-outputs last.pt /ripple_vla/vlm/last.pt`.
+
+How to read it: `gain` = score with the right image minus score with another sample's image, with a paired
+standard error. Text priors score the same either way, so a random projector gives gain ~ 0 on every task;
+gain > 2 SE means visual information reaches the LLM. Expect caption NLL (coco, llava) and shapes to move
+first; POPE, MMBench and VQAv2 need instruction following and may stay near the baseline until a
+visual instruction-tuning stage exists.
 
 ## Notes
 - Ripple multiplies `inputs_embeds` by `embed_scale` itself, so image tokens are spliced at raw embedding scale.

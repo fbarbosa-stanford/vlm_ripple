@@ -237,19 +237,25 @@ def load_trainable(model: nn.Module, path: str):
 # Inference (no FSDP): backbone spread over local GPUs with accelerate device_map, small
 # modules on cuda:0. Good for eval/demo serving with batching across many sims.
 # --------------------------------------------------------------------------------------
-def build_vla_inference(trained_pt: str, ckpt_dir: str, vision_repo: str = VISION_REPO,
-                        tiny: bool = False):
+def build_vla_inference(trained_pt: str | None, ckpt_dir: str, vision_repo: str = VISION_REPO,
+                        tiny: bool = False, cfg: VLAConfig | None = None, device: str | None = None):
+    """trained_pt: trainable-only checkpoint from train.py. If None, the projector and action expert
+    keep their random init (needs `cfg`), which gives the "no visual training" baseline.
+    device: where the small modules (and the tiny backbone) live; defaults to cuda:0 / cpu."""
     import dataclasses
 
     from transformers import AutoModelForCausalLM, SiglipVisionModel
 
-    blob = torch.load(trained_pt, map_location="cpu", weights_only=False)
-    cfg = VLAConfig(**{k: (tuple(v) if isinstance(v, list) and k in ("feature_layers", "lora_targets") else v)
-                       for k, v in blob["cfg"].items() if k in {f.name for f in dataclasses.fields(VLAConfig)}})
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    blob = torch.load(trained_pt, map_location="cpu", weights_only=False) if trained_pt else None
+    if blob is not None:
+        cfg = VLAConfig(**{k: (tuple(v) if isinstance(v, list) and k in ("feature_layers", "lora_targets") else v)
+                           for k, v in blob["cfg"].items() if k in {f.name for f in dataclasses.fields(VLAConfig)}})
+    assert cfg is not None, "pass trained_pt or cfg"
     bf16 = torch.bfloat16
     if tiny:
         backbone = AutoModelForCausalLM.from_config(tiny_backbone_config(ckpt_dir), trust_remote_code=True,
-                                                    torch_dtype=bf16).cuda()
+                                                    torch_dtype=bf16).to(dev)
         vision = tiny_vision().to(bf16)
     else:
         backbone = AutoModelForCausalLM.from_pretrained(ckpt_dir, trust_remote_code=True, torch_dtype=bf16,
@@ -257,23 +263,29 @@ def build_vla_inference(trained_pt: str, ckpt_dir: str, vision_repo: str = VISIO
         vision = SiglipVisionModel.from_pretrained(vision_repo, torch_dtype=bf16)
     if cfg.lora_rank > 0:
         apply_lora(backbone.model.layers, cfg)  # LoRA params land on each layer's device
+    # Same init as training: projector gain = mean RMS of the (unscaled) token embeddings.
+    target_rms = backbone.model.embed_tokens.weight.float().pow(2).mean(-1).sqrt().mean().item()
     model = RippleVLA.__new__(RippleVLA)
     nn.Module.__init__(model)
-    # build small modules on cuda:0 without moving the (device-mapped) backbone
-    tmp = RippleVLA(_Stub(backbone.config.hidden_size), _Stub(vision.config.hidden_size, vision.config), cfg, 1.0)
-    model.cfg, model.backbone, model.vision = cfg, backbone, vision.cuda().eval()
-    model.projector, model.expert = tmp.projector.cuda(), tmp.expert.cuda()
+    # build small modules on `dev` without moving the (device-mapped) backbone
+    tmp = RippleVLA(_Stub(backbone.config.hidden_size), _Stub(vision.config.hidden_size, vision.config), cfg,
+                    target_rms)
+    model.cfg, model.backbone, model.vision = cfg, backbone, vision.to(dev).eval()
+    model.projector, model.expert = tmp.projector.to(dev), tmp.expert.to(dev)
     for k in ("action_mean", "action_std", "state_mean", "state_std"):
-        model.register_buffer(k, getattr(tmp, k).cuda())
-    sd = blob["state_dict"]
-    cur = dict(model.named_parameters()) | dict(model.named_buffers())
-    missing = [n for n in sd if n not in cur]
-    with torch.no_grad():
-        for n, v in sd.items():
-            if n in cur:
-                cur[n].copy_(v.to(cur[n].device, cur[n].dtype))
+        model.register_buffer(k, getattr(tmp, k).to(dev))
+    if blob is not None:
+        sd = blob["state_dict"]
+        cur = dict(model.named_parameters()) | dict(model.named_buffers())
+        missing = [n for n in sd if n not in cur]
+        with torch.no_grad():
+            for n, v in sd.items():
+                if n in cur:
+                    cur[n].copy_(v.to(cur[n].device, cur[n].dtype))
+        print(f"[infer] loaded {len(sd) - len(missing)} trainable tensors; missing={missing[:5]}", flush=True)
+    else:
+        print("[infer] no checkpoint: projector/expert are RANDOM (baseline)", flush=True)
     model.eval()
-    print(f"[infer] loaded {len(sd) - len(missing)} trainable tensors; missing={missing[:5]}", flush=True)
     return model, cfg
 
 

@@ -5,6 +5,9 @@
   modal run ripple_vla/modal_app.py::fetch_llava           # one-time: LLaVA-Pretrain 558k -> data volume
   modal run --detach ripple_vla/modal_app.py::train --stage align --args "--llava_dir /data/llava --steps 3000"
   modal run --detach ripple_vla/modal_app.py::train --stage vla --args "--resume /outputs/ripple_vla/align/last.pt --lora_rank 32"
+  modal run ripple_vla/modal_app.py::eval_vlm                                   # random-projector baseline
+  modal run ripple_vla/modal_app.py::eval_vlm --ckpt /outputs/ripple_vla/vlm/last.pt
+  modal run ripple_vla/modal_app.py::eval_vlm --tiny --args "--n 32 --tasks shapes,pope"   # pipeline test
 """
 
 import os
@@ -106,6 +109,24 @@ def train(stage: str, args: str = "", name: str = ""):
     out = f"/outputs/ripple_vla/{name or stage}"
     _torchrun(n, ["--stage", stage, "--ckpt_dir", d, "--out", out, "--wandb", *shlex.split(args)])
     outputs.commit()
+
+
+@app.function(image=image, gpu=os.environ.get("RIPPLE_EVAL_GPU", "H200:2"), volumes=VOLS, secrets=SECRETS,
+              timeout=6 * 60 * 60, memory=256 * 1024)
+def eval_vlm(ckpt: str = "", args: str = "", name: str = "", tiny: bool = False):
+    """VLM eval (see eval_vlm.py). Empty ckpt = random-projector baseline. Results land in
+    /outputs/ripple_vla/eval/<name>/ on the ripple-vla-outputs volume and are also returned."""
+    import json
+    import shlex
+
+    d = _snapshot(full=not tiny)
+    out = f"/outputs/ripple_vla/eval/{name or ('random' if not ckpt else os.path.basename(os.path.dirname(ckpt)))}"
+    cmd = ["python", "eval_vlm.py", "--ckpt_dir", d, "--out", out, "--llava_zip", LLAVA_ZIP]
+    cmd += (["--ckpt", ckpt] if ckpt else []) + (["--tiny"] if tiny else []) + shlex.split(args)
+    print("$", " ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True, cwd="/root/ripple_vla")
+    outputs.commit()
+    return json.load(open(f"{out}/results.json"))
 
 
 LLAVA_ZIP = ("/root/.cache/huggingface/hub/datasets--liuhaotian--LLaVA-Pretrain/snapshots/"
